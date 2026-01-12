@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Flux Kustomization CR that handles infrastructure/ with variable substitution
+  - infrastructure-ks.yaml
+  # - infrastructure/certmanager  # enable when ready
+  # - infrastructure/headlamp     # enable when ready

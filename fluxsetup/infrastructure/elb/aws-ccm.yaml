@@ -1,0 +1,24 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: cloud-provider-aws
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://github.com/kubernetes/cloud-provider-aws
+  ref:
+    branch: master
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: aws-ccm
+  namespace: flux-system
+spec:
+  interval: 1h
+  sourceRef:
+    kind: GitRepository
+    name: cloud-provider-aws
+  path: ./examples/existing-cluster/base
+  prune: true
+  targetNamespace: kube-system
