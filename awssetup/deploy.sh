@@ -40,6 +40,30 @@ fi
 echo "Key pair OK"
 echo ""
 
+# Save state on exit (success or failure) for cleanup
+save_state() {
+    cat <<EOF > "${SCRIPT_DIR}/cluster-state.env"
+# Generated state file - do not edit
+CLUSTER_NAME="${CLUSTER_NAME}"
+REGION="${REGION}"
+VPC_ID="${VPC_ID:-}"
+PUBLIC_SUBNET_ID="${PUBLIC_SUBNET_ID:-}"
+PRIVATE_SUBNET_ID="${PRIVATE_SUBNET_ID:-}"
+PUBLIC_RT_ID="${PUBLIC_RT_ID:-}"
+PRIVATE_RT_ID="${PRIVATE_RT_ID:-}"
+IGW_ID="${IGW_ID:-}"
+NAT_GW_ID="${NAT_GW_ID:-}"
+EIP_ALLOC="${EIP_ALLOC:-}"
+CP_SG_ID="${CP_SG_ID:-}"
+WORKER_SG_ID="${WORKER_SG_ID:-}"
+NLB_ARN="${NLB_ARN:-}"
+TG_ARN="${TG_ARN:-}"
+NLB_DNS="${NLB_DNS:-}"
+CP_INSTANCE_ID="${CP_INSTANCE_ID:-}"
+EOF
+}
+trap save_state EXIT
+
 # Deploy
 create_secrets
 create_vpc
@@ -49,32 +73,8 @@ create_nlb
 launch_control_plane
 launch_workers
 
-# Save state for cleanup
-save_state() {
-    cat <<EOF > "${SCRIPT_DIR}/cluster-state.env"
-# Generated state file - do not edit
-CLUSTER_NAME="${CLUSTER_NAME}"
-REGION="${REGION}"
-VPC_ID="${VPC_ID}"
-PUBLIC_SUBNET_ID="${PUBLIC_SUBNET_ID}"
-PRIVATE_SUBNET_ID="${PRIVATE_SUBNET_ID}"
-PUBLIC_RT_ID="${PUBLIC_RT_ID}"
-PRIVATE_RT_ID="${PRIVATE_RT_ID}"
-IGW_ID="${IGW_ID}"
-NAT_GW_ID="${NAT_GW_ID}"
-EIP_ALLOC="${EIP_ALLOC}"
-CP_SG_ID="${CP_SG_ID}"
-WORKER_SG_ID="${WORKER_SG_ID}"
-NLB_ARN="${NLB_ARN}"
-TG_ARN="${TG_ARN}"
-NLB_DNS="${NLB_DNS}"
-CP_INSTANCE_ID="${CP_INSTANCE_ID}"
-EOF
-    echo "State saved to cluster-state.env"
-}
-
-save_state
-
+echo ""
+echo "State saved to cluster-state.env"
 echo ""
 echo "============================================================"
 echo "Cluster deployment initiated!"
