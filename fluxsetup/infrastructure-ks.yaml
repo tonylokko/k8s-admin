@@ -7,7 +7,7 @@ spec:
   interval: 1h
   sourceRef:
     kind: GitRepository
-    name: flux
+    name: flux-system
     namespace: flux-system
   path: ./fluxsetup/infrastructure
   prune: true

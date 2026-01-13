@@ -82,13 +82,19 @@ delete_iam() {
     aws iam delete-instance-profile \
         --instance-profile-name ${CLUSTER_NAME}-node-profile 2>/dev/null || true
 
-    aws iam detach-role-policy \
-        --role-name ${CLUSTER_NAME}-node-role \
-        --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore 2>/dev/null || true
+    # Detach all managed policies from role
+    for POLICY_ARN in $(aws iam list-attached-role-policies --role-name ${CLUSTER_NAME}-node-role \
+        --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+        aws iam detach-role-policy --role-name ${CLUSTER_NAME}-node-role \
+            --policy-arn "$POLICY_ARN" 2>/dev/null || true
+    done
 
-    aws iam delete-role-policy \
-        --role-name ${CLUSTER_NAME}-node-role \
-        --policy-name node-policy 2>/dev/null || true
+    # Delete all inline policies from role
+    for POLICY_NAME in $(aws iam list-role-policies --role-name ${CLUSTER_NAME}-node-role \
+        --query 'PolicyNames[]' --output text 2>/dev/null); do
+        aws iam delete-role-policy --role-name ${CLUSTER_NAME}-node-role \
+            --policy-name "$POLICY_NAME" 2>/dev/null || true
+    done
 
     aws iam delete-role \
         --role-name ${CLUSTER_NAME}-node-role 2>/dev/null || true

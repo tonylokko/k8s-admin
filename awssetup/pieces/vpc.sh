@@ -163,7 +163,12 @@ delete_vpc() {
     if [[ -n "${NAT_GW_ID:-}" ]]; then
         aws ec2 delete-nat-gateway --nat-gateway-id $NAT_GW_ID --region $REGION 2>/dev/null || true
         echo "Waiting for NAT Gateway deletion..."
-        sleep 60
+        for i in {1..30}; do
+            STATE=$(aws ec2 describe-nat-gateways --nat-gateway-ids $NAT_GW_ID \
+                --query 'NatGateways[0].State' --output text --region $REGION 2>/dev/null || echo "deleted")
+            [[ "$STATE" == "deleted" || "$STATE" == "None" ]] && break
+            sleep 10
+        done
     fi
 
     # Release EIP
@@ -179,7 +184,26 @@ delete_vpc() {
         aws ec2 delete-subnet --subnet-id $PRIVATE_SUBNET_ID --region $REGION 2>/dev/null || true
     fi
 
-    # Delete security groups
+    # Delete security groups - revoke rules first to break cross-references
+    for SG_ID in "${CP_SG_ID:-}" "${WORKER_SG_ID:-}"; do
+        if [[ -n "$SG_ID" ]]; then
+            # Revoke all ingress rules
+            INGRESS_RULES=$(aws ec2 describe-security-groups --group-ids $SG_ID \
+                --query 'SecurityGroups[0].IpPermissions' --output json --region $REGION 2>/dev/null || echo "[]")
+            if [[ -n "$INGRESS_RULES" && "$INGRESS_RULES" != "[]" ]]; then
+                aws ec2 revoke-security-group-ingress --group-id $SG_ID \
+                    --ip-permissions "$INGRESS_RULES" --region $REGION 2>/dev/null || true
+            fi
+            # Revoke all egress rules
+            EGRESS_RULES=$(aws ec2 describe-security-groups --group-ids $SG_ID \
+                --query 'SecurityGroups[0].IpPermissionsEgress' --output json --region $REGION 2>/dev/null || echo "[]")
+            if [[ -n "$EGRESS_RULES" && "$EGRESS_RULES" != "[]" ]]; then
+                aws ec2 revoke-security-group-egress --group-id $SG_ID \
+                    --ip-permissions "$EGRESS_RULES" --region $REGION 2>/dev/null || true
+            fi
+        fi
+    done
+    # Now delete the security groups
     if [[ -n "${CP_SG_ID:-}" ]]; then
         aws ec2 delete-security-group --group-id $CP_SG_ID --region $REGION 2>/dev/null || true
     fi
