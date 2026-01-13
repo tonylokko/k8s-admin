@@ -96,8 +96,6 @@ networking:
   podSubnet: "${POD_CIDR}"
 apiServer:
   certSANs: ["${API_ENDPOINT}", "${PRIVATE_IP}", "localhost", "127.0.0.1"]
-  extraArgs:
-    cloud-provider: external
 controllerManager:
   extraArgs:
     cloud-provider: external
@@ -123,7 +121,7 @@ aws secretsmanager create-secret --name /k8s/${CLUSTER_NAME}/ca-cert-hash --secr
 # Install minimal Cilium CNI (basic networking only - Flux will manage full config)
 CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
 curl -L --fail https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-amd64.tar.gz | tar xzC /usr/local/bin
-cilium install --set ipam.operator.clusterPoolIPv4PodCIDRList=${POD_CIDR}
+cilium install --set ipam.operator.clusterPoolIPv4PodCIDRList="{${POD_CIDR}}"
 
 # Wait for Cilium to be ready
 cilium status --wait

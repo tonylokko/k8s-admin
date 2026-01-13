@@ -9,7 +9,7 @@ create_nlb() {
         --type network \
         --scheme internet-facing \
         --subnets $PUBLIC_SUBNET_ID \
-        --tag-specifications "ResourceType=loadbalancer,Tags=[{Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=owned}]" \
+        --tags Key=kubernetes.io/cluster/${CLUSTER_NAME},Value=owned \
         --query 'LoadBalancers[0].LoadBalancerArn' --output text --region $REGION)
     echo "NLB: $NLB_ARN"
 
@@ -78,6 +78,10 @@ launch_control_plane() {
         --metadata-options "HttpTokens=required,HttpPutResponseHopLimit=2,HttpEndpoint=enabled" \
         --query 'Instances[0].InstanceId' --output text --region $REGION)
     echo "Control Plane Instance: $CP_INSTANCE_ID"
+
+    # Wait for instance to be running before registering with NLB
+    echo "Waiting for instance to be running..."
+    aws ec2 wait instance-running --instance-ids $CP_INSTANCE_ID --region $REGION
 
     # Register with NLB
     aws elbv2 register-targets --target-group-arn $TG_ARN \

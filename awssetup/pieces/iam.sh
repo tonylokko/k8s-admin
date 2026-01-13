@@ -61,6 +61,11 @@ create_iam() {
         --instance-profile-name ${CLUSTER_NAME}-node-profile \
         --role-name ${CLUSTER_NAME}-node-role 2>/dev/null || echo "Role already attached"
 
+    # Attach SSM managed policy for Session Manager access
+    aws iam attach-role-policy \
+        --role-name ${CLUSTER_NAME}-node-role \
+        --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore 2>/dev/null || true
+
     echo "Waiting for IAM propagation..."
     sleep 10
 
@@ -76,6 +81,10 @@ delete_iam() {
 
     aws iam delete-instance-profile \
         --instance-profile-name ${CLUSTER_NAME}-node-profile 2>/dev/null || true
+
+    aws iam detach-role-policy \
+        --role-name ${CLUSTER_NAME}-node-role \
+        --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore 2>/dev/null || true
 
     aws iam delete-role-policy \
         --role-name ${CLUSTER_NAME}-node-role \
