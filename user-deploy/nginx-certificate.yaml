@@ -1,0 +1,21 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nginx-tls
+  namespace: devns
+spec:
+  secretName: nginx-tls
+  duration: 2160h # 90 days
+  renewBefore: 360h # 15 days
+  subject:
+    organizations:
+      - k8s-admin
+  commonName: nginx.devns.local
+  dnsNames:
+    - nginx.devns.local
+    - nginx.local
+    - localhost
+  issuerRef:
+    name: ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

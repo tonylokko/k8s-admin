@@ -1,0 +1,15 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: devns
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infrastructure
+  interval: 1h
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  path: ./fluxsetup/devns
+  prune: true
