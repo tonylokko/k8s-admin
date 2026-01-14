@@ -42,6 +42,7 @@ imds_get() {
 }
 while ! TOKEN=$(get_token); do sleep 1; done
 while ! imds_get instance-id >/dev/null; do sleep 1; done
+NODE_NAME=$(imds_get local-hostname)
 
 # Install dependencies
 retry 10 15 apt-get update || fatal "apt-get update failed"
@@ -145,6 +146,7 @@ discovery:
     caCertHashes:
       - "${CA_CERT_HASH}"
 nodeRegistration:
+  name: "${NODE_NAME}"
   kubeletExtraArgs:
     cloud-provider: external
 JOINEOF

@@ -1,0 +1,35 @@
+apiVersion: fluxcd.controlplane.io/v1
+kind: FluxInstance
+metadata:
+  name: flux
+  namespace: flux-system
+spec:
+  distribution:
+    version: "2.x"
+    registry: ghcr.io/fluxcd
+  components:
+    - source-controller
+    - kustomize-controller
+    - helm-controller
+    - notification-controller
+  cluster:
+    type: kubernetes
+  kustomize:
+    patches:
+      - target:
+          kind: Deployment
+        patch: |
+          - op: add
+            path: /spec/template/spec/tolerations
+            value:
+              - key: "node-role.kubernetes.io/control-plane"
+                operator: "Exists"
+                effect: "NoSchedule"
+              - key: "node.cloudprovider.kubernetes.io/uninitialized"
+                operator: "Exists"
+                effect: "NoSchedule"
+  sync:
+    kind: GitRepository
+    url: https://${FLUX_GIT_REPO}
+    ref: refs/heads/${FLUX_GIT_BRANCH}
+    path: ${FLUX_PATH}
