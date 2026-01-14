@@ -3,7 +3,7 @@
 # Use this when destroy.sh can't run due to missing state file
 # Usage: ./cleanup.sh
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -37,19 +37,19 @@ TG_ARN=$(aws elbv2 describe-target-groups \
     --query 'TargetGroups[0].TargetGroupArn' --output text --region $REGION 2>/dev/null || true)
 [[ "$TG_ARN" == "None" ]] && TG_ARN=""
 
-VPC_ID=$(aws ec2 describe-vpcs \
+VPC_IDS=$(aws ec2 describe-vpcs \
     --filters "Name=tag:Name,Values=${CLUSTER_NAME}-vpc" \
-    --query 'Vpcs[0].VpcId' --output text --region $REGION 2>/dev/null || true)
-[[ "$VPC_ID" == "None" ]] && VPC_ID=""
+    --query 'Vpcs[].VpcId' --output text --region $REGION 2>/dev/null || true)
+[[ "$VPC_IDS" == "None" ]] && VPC_IDS=""
 
 NAT_GW_ID=$(aws ec2 describe-nat-gateways \
     --filter "Name=tag:Name,Values=${CLUSTER_NAME}-nat" \
     --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text --region $REGION 2>/dev/null || true)
 
-EIP_ALLOC=$(aws ec2 describe-addresses \
+EIP_ALLOCS=$(aws ec2 describe-addresses \
     --filters "Name=tag:Name,Values=${CLUSTER_NAME}-nat-eip" \
-    --query 'Addresses[0].AllocationId' --output text --region $REGION 2>/dev/null || true)
-[[ "$EIP_ALLOC" == "None" ]] && EIP_ALLOC=""
+    --query 'Addresses[].AllocationId' --output text --region $REGION 2>/dev/null || true)
+[[ "$EIP_ALLOCS" == "None" ]] && EIP_ALLOCS=""
 
 IGW_ID=$(aws ec2 describe-internet-gateways \
     --filters "Name=tag:Name,Values=${CLUSTER_NAME}-igw" \
@@ -65,9 +65,9 @@ echo "Found resources:"
 echo "  Instances:    ${INSTANCE_IDS:-none}"
 echo "  NLB:          ${NLB_ARN:-none}"
 echo "  Target Group: ${TG_ARN:-none}"
-echo "  VPC:          ${VPC_ID:-none}"
+echo "  VPCs:         ${VPC_IDS:-none}"
 echo "  NAT Gateway:  ${NAT_GW_ID:-none}"
-echo "  EIP:          ${EIP_ALLOC:-none}"
+echo "  EIPs:         ${EIP_ALLOCS:-none}"
 echo "  IGW:          ${IGW_ID:-none}"
 echo "  Secrets:      ${SECRETS:-none}"
 echo "  IAM:          ${CLUSTER_NAME}-node-role (will check)"
@@ -125,60 +125,104 @@ if [[ -n "$NAT_GW_ID" ]]; then
     echo "Done."
 fi
 
-# 5. EIP
-if [[ -n "$EIP_ALLOC" ]]; then
-    echo "=== Releasing EIP ==="
-    aws ec2 release-address --allocation-id $EIP_ALLOC --region $REGION 2>/dev/null || true
+# 5. EIPs
+if [[ -n "$EIP_ALLOCS" ]]; then
+    echo "=== Releasing EIPs ==="
+    for EIP_ALLOC in $EIP_ALLOCS; do
+        echo "Releasing EIP: $EIP_ALLOC"
+        aws ec2 release-address --allocation-id "$EIP_ALLOC" --region $REGION 2>/dev/null || true
+    done
     echo "Done."
 fi
 
-# 6. VPC resources (subnets, SGs, route tables, IGW)
-if [[ -n "$VPC_ID" ]]; then
-    echo "=== Deleting VPC resources ==="
+# 6. VPC resources (subnets, SGs, route tables, IGW, ENIs)
+for VPC_ID in $VPC_IDS; do
+    [[ -z "$VPC_ID" ]] && continue
+    echo "=== Deleting VPC resources for: $VPC_ID ==="
+
+    # Find and delete all load balancers in this VPC first
+    echo "Checking for load balancers in VPC..."
+    for LB_ARN in $(aws elbv2 describe-load-balancers \
+        --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text --region $REGION 2>/dev/null); do
+        [[ -z "$LB_ARN" || "$LB_ARN" == "None" ]] && continue
+        echo "Deleting load balancer: $LB_ARN"
+        aws elbv2 delete-load-balancer --load-balancer-arn "$LB_ARN" --region $REGION 2>/dev/null || true
+    done
+    # Wait for LB ENIs to be released
+    sleep 15
+
+    # Delete NAT Gateways in this VPC
+    for NGW_ID in $(aws ec2 describe-nat-gateways \
+        --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available,pending" \
+        --query 'NatGateways[].NatGatewayId' --output text --region $REGION 2>/dev/null); do
+        [[ -z "$NGW_ID" ]] && continue
+        echo "Deleting NAT Gateway: $NGW_ID"
+        aws ec2 delete-nat-gateway --nat-gateway-id "$NGW_ID" --region $REGION 2>/dev/null || true
+    done
+
+    # Wait for NAT gateways to delete
+    echo "Waiting for NAT Gateways to delete..."
+    for i in {1..30}; do
+        PENDING=$(aws ec2 describe-nat-gateways \
+            --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available,pending,deleting" \
+            --query 'NatGateways[].NatGatewayId' --output text --region $REGION 2>/dev/null || true)
+        [[ -z "$PENDING" ]] && break
+        sleep 10
+    done
+
+    # Delete ENIs (network interfaces) - these block everything else
+    echo "Deleting network interfaces..."
+    for ENI_ID in $(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" \
+        --query 'NetworkInterfaces[].NetworkInterfaceId' --output text --region $REGION 2>/dev/null); do
+        [[ -z "$ENI_ID" ]] && continue
+        # Detach first if attached
+        ATTACH_ID=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI_ID" \
+            --query 'NetworkInterfaces[0].Attachment.AttachmentId' --output text --region $REGION 2>/dev/null || true)
+        if [[ -n "$ATTACH_ID" && "$ATTACH_ID" != "None" ]]; then
+            echo "  Detaching ENI: $ENI_ID"
+            aws ec2 detach-network-interface --attachment-id "$ATTACH_ID" --force --region $REGION 2>/dev/null || true
+            sleep 2
+        fi
+        echo "  Deleting ENI: $ENI_ID"
+        aws ec2 delete-network-interface --network-interface-id "$ENI_ID" --region $REGION 2>/dev/null || true
+    done
 
     # Delete subnets
     for SUBNET_ID in $(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
         --query 'Subnets[].SubnetId' --output text --region $REGION 2>/dev/null); do
         echo "Deleting subnet: $SUBNET_ID"
         for i in {1..5}; do
-            aws ec2 delete-subnet --subnet-id $SUBNET_ID --region $REGION 2>/dev/null && break
-            echo "  Retrying..."
-            sleep 10
+            aws ec2 delete-subnet --subnet-id "$SUBNET_ID" --region $REGION 2>/dev/null && break
+            sleep 5
         done
     done
 
     # Delete security groups (non-default)
-    # First, revoke all rules to break cross-references between security groups
     SG_IDS=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" \
         --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text --region $REGION 2>/dev/null)
 
     if [[ -n "$SG_IDS" ]]; then
-        echo "Revoking security group rules to break cross-references..."
+        echo "Revoking security group rules..."
         for SG_ID in $SG_IDS; do
-            # Revoke all ingress rules
-            INGRESS_RULES=$(aws ec2 describe-security-groups --group-ids $SG_ID \
+            INGRESS_RULES=$(aws ec2 describe-security-groups --group-ids "$SG_ID" \
                 --query 'SecurityGroups[0].IpPermissions' --output json --region $REGION 2>/dev/null)
             if [[ -n "$INGRESS_RULES" && "$INGRESS_RULES" != "[]" ]]; then
-                aws ec2 revoke-security-group-ingress --group-id $SG_ID \
+                aws ec2 revoke-security-group-ingress --group-id "$SG_ID" \
                     --ip-permissions "$INGRESS_RULES" --region $REGION 2>/dev/null || true
             fi
-
-            # Revoke all egress rules
-            EGRESS_RULES=$(aws ec2 describe-security-groups --group-ids $SG_ID \
+            EGRESS_RULES=$(aws ec2 describe-security-groups --group-ids "$SG_ID" \
                 --query 'SecurityGroups[0].IpPermissionsEgress' --output json --region $REGION 2>/dev/null)
             if [[ -n "$EGRESS_RULES" && "$EGRESS_RULES" != "[]" ]]; then
-                aws ec2 revoke-security-group-egress --group-id $SG_ID \
+                aws ec2 revoke-security-group-egress --group-id "$SG_ID" \
                     --ip-permissions "$EGRESS_RULES" --region $REGION 2>/dev/null || true
             fi
         done
 
-        # Now delete the security groups
         for SG_ID in $SG_IDS; do
             echo "Deleting security group: $SG_ID"
             for i in {1..5}; do
-                aws ec2 delete-security-group --group-id $SG_ID --region $REGION 2>/dev/null && break
-                echo "  Retrying in 5s..."
-                sleep 5
+                aws ec2 delete-security-group --group-id "$SG_ID" --region $REGION 2>/dev/null && break
+                sleep 3
             done
         done
     fi
@@ -187,26 +231,26 @@ if [[ -n "$VPC_ID" ]]; then
     for RT_ID in $(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" \
         --query 'RouteTables[?Associations[0].Main!=`true`].RouteTableId' --output text --region $REGION 2>/dev/null); do
         echo "Deleting route table: $RT_ID"
-        # Disassociate first
-        for ASSOC_ID in $(aws ec2 describe-route-tables --route-table-ids $RT_ID \
+        for ASSOC_ID in $(aws ec2 describe-route-tables --route-table-ids "$RT_ID" \
             --query 'RouteTables[].Associations[?!Main].RouteTableAssociationId' --output text --region $REGION 2>/dev/null); do
-            aws ec2 disassociate-route-table --association-id $ASSOC_ID --region $REGION 2>/dev/null || true
+            aws ec2 disassociate-route-table --association-id "$ASSOC_ID" --region $REGION 2>/dev/null || true
         done
-        aws ec2 delete-route-table --route-table-id $RT_ID --region $REGION 2>/dev/null || true
+        aws ec2 delete-route-table --route-table-id "$RT_ID" --region $REGION 2>/dev/null || true
     done
 
-    # Detach and delete IGW
-    if [[ -n "$IGW_ID" ]]; then
-        echo "Deleting IGW: $IGW_ID"
-        aws ec2 detach-internet-gateway --internet-gateway-id $IGW_ID --vpc-id $VPC_ID --region $REGION 2>/dev/null || true
-        aws ec2 delete-internet-gateway --internet-gateway-id $IGW_ID --region $REGION 2>/dev/null || true
-    fi
+    # Detach and delete all IGWs for this VPC
+    for IGW in $(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
+        --query 'InternetGateways[].InternetGatewayId' --output text --region $REGION 2>/dev/null); do
+        echo "Deleting IGW: $IGW"
+        aws ec2 detach-internet-gateway --internet-gateway-id "$IGW" --vpc-id "$VPC_ID" --region $REGION 2>/dev/null || true
+        aws ec2 delete-internet-gateway --internet-gateway-id "$IGW" --region $REGION 2>/dev/null || true
+    done
 
     # Delete VPC
     echo "Deleting VPC: $VPC_ID"
-    aws ec2 delete-vpc --vpc-id $VPC_ID --region $REGION 2>/dev/null || true
-    echo "Done."
-fi
+    aws ec2 delete-vpc --vpc-id "$VPC_ID" --region $REGION 2>/dev/null || true
+    echo "Done with VPC: $VPC_ID"
+done
 
 # 7. IAM
 echo "=== Deleting IAM resources ==="

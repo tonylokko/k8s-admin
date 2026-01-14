@@ -169,6 +169,9 @@ retry 5 10 bash -c "aws secretsmanager put-secret-value --secret-id /k8s/${CLUST
 CA_CERT_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')
 retry 5 10 bash -c "aws secretsmanager put-secret-value --secret-id /k8s/${CLUSTER_NAME}/ca-cert-hash --secret-string 'sha256:${CA_CERT_HASH}' --region $REGION 2>/dev/null || aws secretsmanager create-secret --name /k8s/${CLUSTER_NAME}/ca-cert-hash --secret-string 'sha256:${CA_CERT_HASH}' --region $REGION" || fatal "Failed to store CA cert hash"
 
+# Install Gateway API CRDs (must be present before Cilium starts)
+retry 5 15 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/experimental-install.yaml || fatal "Failed to install Gateway API CRDs"
+
 # Install minimal Cilium CNI (basic networking only - Flux will manage full config)
 CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
 curl -L --fail https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-amd64.tar.gz | tar xzC /usr/local/bin || fatal "Failed to install Cilium CLI"
