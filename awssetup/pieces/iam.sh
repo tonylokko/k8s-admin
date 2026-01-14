@@ -34,10 +34,12 @@ create_iam() {
                     "Effect": "Allow",
                     "Action": [
                         "ec2:Describe*",
-                        "ecr:GetAuthorizationToken",
-                        "ecr:BatchCheckLayerAvailability",
-                        "ecr:GetDownloadUrlForLayer",
-                        "ecr:BatchGetImage",
+                        "ec2:CreateSecurityGroup",
+                        "ec2:DeleteSecurityGroup",
+                        "ec2:AuthorizeSecurityGroupIngress",
+                        "ec2:RevokeSecurityGroupIngress",
+                        "ec2:AuthorizeSecurityGroupEgress",
+                        "ec2:RevokeSecurityGroupEgress",
                         "ec2:CreateSnapshot",
                         "ec2:AttachVolume",
                         "ec2:DetachVolume",
@@ -46,7 +48,18 @@ create_iam() {
                         "ec2:DeleteVolume",
                         "ec2:CreateTags",
                         "ec2:DeleteTags",
-                        "ec2:DeleteSnapshot"
+                        "ec2:DeleteSnapshot",
+                        "ecr:GetAuthorizationToken",
+                        "ecr:BatchCheckLayerAvailability",
+                        "ecr:GetDownloadUrlForLayer",
+                        "ecr:BatchGetImage"
+                    ],
+                    "Resource": "*"
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "elasticloadbalancing:*"
                     ],
                     "Resource": "*"
                 }
