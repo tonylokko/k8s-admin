@@ -60,17 +60,36 @@ SECRETS=$(aws secretsmanager list-secrets \
     --filter Key=name,Values=/k8s/${CLUSTER_NAME}/ \
     --query 'SecretList[].Name' --output text --region $REGION 2>/dev/null || true)
 
+# Discover load balancers in the VPCs (created by K8s services)
+VPC_ELBS_V2=""
+VPC_ELBS_CLASSIC=""
+for VPC_ID in $VPC_IDS; do
+    [[ -z "$VPC_ID" ]] && continue
+    # ELBv2 (ALB/NLB)
+    V2=$(aws elbv2 describe-load-balancers \
+        --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text --region $REGION 2>/dev/null || true)
+    [[ -n "$V2" && "$V2" != "None" ]] && VPC_ELBS_V2="$VPC_ELBS_V2 $V2"
+    # Classic ELBs
+    CLASSIC=$(aws elb describe-load-balancers \
+        --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text --region $REGION 2>/dev/null || true)
+    [[ -n "$CLASSIC" && "$CLASSIC" != "None" ]] && VPC_ELBS_CLASSIC="$VPC_ELBS_CLASSIC $CLASSIC"
+done
+VPC_ELBS_V2=$(echo "$VPC_ELBS_V2" | xargs)
+VPC_ELBS_CLASSIC=$(echo "$VPC_ELBS_CLASSIC" | xargs)
+
 # Report what was found
 echo "Found resources:"
-echo "  Instances:    ${INSTANCE_IDS:-none}"
-echo "  NLB:          ${NLB_ARN:-none}"
-echo "  Target Group: ${TG_ARN:-none}"
-echo "  VPCs:         ${VPC_IDS:-none}"
-echo "  NAT Gateway:  ${NAT_GW_ID:-none}"
-echo "  EIPs:         ${EIP_ALLOCS:-none}"
-echo "  IGW:          ${IGW_ID:-none}"
-echo "  Secrets:      ${SECRETS:-none}"
-echo "  IAM:          ${CLUSTER_NAME}-node-role (will check)"
+echo "  Instances:       ${INSTANCE_IDS:-none}"
+echo "  NLB (cluster):   ${NLB_ARN:-none}"
+echo "  Target Group:    ${TG_ARN:-none}"
+echo "  VPCs:            ${VPC_IDS:-none}"
+echo "  ALB/NLB in VPC:  ${VPC_ELBS_V2:-none}"
+echo "  Classic ELBs:    ${VPC_ELBS_CLASSIC:-none}"
+echo "  NAT Gateway:     ${NAT_GW_ID:-none}"
+echo "  EIPs:            ${EIP_ALLOCS:-none}"
+echo "  IGW:             ${IGW_ID:-none}"
+echo "  Secrets:         ${SECRETS:-none}"
+echo "  IAM:             ${CLUSTER_NAME}-node-role (will check)"
 echo ""
 
 read -p "Delete all these resources? (yes/no): " confirm
@@ -142,14 +161,22 @@ for VPC_ID in $VPC_IDS; do
 
     # Find and delete all load balancers in this VPC first
     echo "Checking for load balancers in VPC..."
+    # ELBv2 (ALB/NLB)
     for LB_ARN in $(aws elbv2 describe-load-balancers \
         --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text --region $REGION 2>/dev/null); do
         [[ -z "$LB_ARN" || "$LB_ARN" == "None" ]] && continue
-        echo "Deleting load balancer: $LB_ARN"
+        echo "Deleting ALB/NLB: $LB_ARN"
         aws elbv2 delete-load-balancer --load-balancer-arn "$LB_ARN" --region $REGION 2>/dev/null || true
     done
-    # Wait for LB ENIs to be released
-    sleep 15
+    # Classic ELBs
+    for ELB_NAME in $(aws elb describe-load-balancers \
+        --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text --region $REGION 2>/dev/null); do
+        [[ -z "$ELB_NAME" || "$ELB_NAME" == "None" ]] && continue
+        echo "Deleting Classic ELB: $ELB_NAME"
+        aws elb delete-load-balancer --load-balancer-name "$ELB_NAME" --region $REGION 2>/dev/null || true
+    done
+    # Wait for LB ENIs to be released (can take 30+ seconds)
+    sleep 30
 
     # Delete NAT Gateways in this VPC
     for NGW_ID in $(aws ec2 describe-nat-gateways \
@@ -184,7 +211,10 @@ for VPC_ID in $VPC_IDS; do
             sleep 2
         fi
         echo "  Deleting ENI: $ENI_ID"
-        aws ec2 delete-network-interface --network-interface-id "$ENI_ID" --region $REGION 2>/dev/null || true
+        for j in {1..5}; do
+            aws ec2 delete-network-interface --network-interface-id "$ENI_ID" --region $REGION 2>/dev/null && break
+            sleep 3
+        done
     done
 
     # Delete subnets
@@ -246,10 +276,21 @@ for VPC_ID in $VPC_IDS; do
         aws ec2 delete-internet-gateway --internet-gateway-id "$IGW" --region $REGION 2>/dev/null || true
     done
 
-    # Delete VPC
+    # Delete VPC (with retry - dependencies may take time to release)
     echo "Deleting VPC: $VPC_ID"
-    aws ec2 delete-vpc --vpc-id "$VPC_ID" --region $REGION 2>/dev/null || true
-    echo "Done with VPC: $VPC_ID"
+    for i in {1..12}; do
+        if aws ec2 delete-vpc --vpc-id "$VPC_ID" --region $REGION 2>&1; then
+            echo "Done with VPC: $VPC_ID"
+            break
+        else
+            if [[ $i -eq 12 ]]; then
+                echo "WARNING: Failed to delete VPC $VPC_ID after 12 attempts"
+            else
+                echo "  VPC has dependencies, waiting... (attempt $i/12)"
+                sleep 10
+            fi
+        fi
+    done
 done
 
 # 7. IAM

@@ -176,12 +176,18 @@ delete_vpc() {
         aws ec2 release-address --allocation-id $EIP_ALLOC --region $REGION 2>/dev/null || true
     fi
 
-    # Delete subnets
+    # Delete subnets (with retry)
     if [[ -n "${PUBLIC_SUBNET_ID:-}" ]]; then
-        aws ec2 delete-subnet --subnet-id $PUBLIC_SUBNET_ID --region $REGION 2>/dev/null || true
+        for i in {1..5}; do
+            aws ec2 delete-subnet --subnet-id $PUBLIC_SUBNET_ID --region $REGION 2>/dev/null && break
+            sleep 5
+        done
     fi
     if [[ -n "${PRIVATE_SUBNET_ID:-}" ]]; then
-        aws ec2 delete-subnet --subnet-id $PRIVATE_SUBNET_ID --region $REGION 2>/dev/null || true
+        for i in {1..5}; do
+            aws ec2 delete-subnet --subnet-id $PRIVATE_SUBNET_ID --region $REGION 2>/dev/null && break
+            sleep 5
+        done
     fi
 
     # Delete security groups - revoke rules first to break cross-references
@@ -203,20 +209,32 @@ delete_vpc() {
             fi
         fi
     done
-    # Now delete the security groups
+    # Now delete the security groups (with retry)
     if [[ -n "${CP_SG_ID:-}" ]]; then
-        aws ec2 delete-security-group --group-id $CP_SG_ID --region $REGION 2>/dev/null || true
+        for i in {1..5}; do
+            aws ec2 delete-security-group --group-id $CP_SG_ID --region $REGION 2>/dev/null && break
+            sleep 3
+        done
     fi
     if [[ -n "${WORKER_SG_ID:-}" ]]; then
-        aws ec2 delete-security-group --group-id $WORKER_SG_ID --region $REGION 2>/dev/null || true
+        for i in {1..5}; do
+            aws ec2 delete-security-group --group-id $WORKER_SG_ID --region $REGION 2>/dev/null && break
+            sleep 3
+        done
     fi
 
-    # Delete route tables (non-main only)
+    # Delete route tables (non-main only, with retry)
     if [[ -n "${PUBLIC_RT_ID:-}" ]]; then
-        aws ec2 delete-route-table --route-table-id $PUBLIC_RT_ID --region $REGION 2>/dev/null || true
+        for i in {1..5}; do
+            aws ec2 delete-route-table --route-table-id $PUBLIC_RT_ID --region $REGION 2>/dev/null && break
+            sleep 3
+        done
     fi
     if [[ -n "${PRIVATE_RT_ID:-}" ]]; then
-        aws ec2 delete-route-table --route-table-id $PRIVATE_RT_ID --region $REGION 2>/dev/null || true
+        for i in {1..5}; do
+            aws ec2 delete-route-table --route-table-id $PRIVATE_RT_ID --region $REGION 2>/dev/null && break
+            sleep 3
+        done
     fi
 
     # Detach and delete IGW
@@ -225,10 +243,23 @@ delete_vpc() {
         aws ec2 delete-internet-gateway --internet-gateway-id $IGW_ID --region $REGION 2>/dev/null || true
     fi
 
-    # Delete VPC
+    # Delete VPC (with retry - dependencies may take time to release)
     if [[ -n "${VPC_ID:-}" ]]; then
-        aws ec2 delete-vpc --vpc-id $VPC_ID --region $REGION 2>/dev/null || true
+        echo "Deleting VPC: $VPC_ID"
+        for i in {1..12}; do
+            if aws ec2 delete-vpc --vpc-id $VPC_ID --region $REGION 2>&1; then
+                echo "VPC deleted."
+                break
+            else
+                if [[ $i -eq 12 ]]; then
+                    echo "WARNING: Failed to delete VPC $VPC_ID after 12 attempts"
+                else
+                    echo "  VPC has dependencies, waiting... (attempt $i/12)"
+                    sleep 10
+                fi
+            fi
+        done
+    else
+        echo "VPC deleted."
     fi
-
-    echo "VPC deleted."
 }
